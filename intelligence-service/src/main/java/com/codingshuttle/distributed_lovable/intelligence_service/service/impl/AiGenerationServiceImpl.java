@@ -109,7 +109,15 @@ public class AiGenerationServiceImpl implements AiGenerationService {
                         finalizeChats(userMessage, chatSession, fullResponseBuffer.toString(), duration, usageRef.get(), userId);
                     });
                 })
-                .doOnError(error -> log.error("Error during streaming for projectId: {}", projectId))
+                .doOnError(error -> {
+                    log.error("Error during streaming for projectId: {}", projectId, error);
+
+                    if (error instanceof org.springframework.web.reactive.function.client.WebClientResponseException ex) {
+                        log.error("OpenRouter status: {}", ex.getStatusCode());
+                        log.error("OpenRouter response body: {}", ex.getResponseBodyAsString());
+                        log.error("OpenRouter headers: {}", ex.getHeaders());
+                    }
+                })
                 .map(response -> {
                     String text = response.getResult().getOutput().getText();
                     return new StreamResponse(text != null ? text : "");
