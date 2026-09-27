@@ -113,9 +113,9 @@ public class AiGenerationServiceImpl implements AiGenerationService {
                     log.error("Error during streaming for projectId: {}", projectId, error);
 
                     if (error instanceof org.springframework.web.reactive.function.client.WebClientResponseException ex) {
-                        log.error("OpenRouter status: {}", ex.getStatusCode());
-                        log.error("OpenRouter response body: {}", ex.getResponseBodyAsString());
-                        log.error("OpenRouter headers: {}", ex.getHeaders());
+                        log.error("OpenRouter status:- {}", ex.getStatusCode());
+                        log.error("OpenRouter response body:- {}", ex.getResponseBodyAsString());
+                        log.error("OpenRouter headers:- {}", ex.getHeaders());
                     }
                 })
                 .map(response -> {
