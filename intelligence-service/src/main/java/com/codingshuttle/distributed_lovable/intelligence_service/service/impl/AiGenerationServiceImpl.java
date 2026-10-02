@@ -89,6 +89,8 @@ public class AiGenerationServiceImpl implements AiGenerationService {
 
                 .doOnNext(response -> {
 
+                    // Some streaming chunks may not contain a Generation.
+                    // Ignore those chunks safely.
                     if (response == null
                             || response.getResult() == null
                             || response.getResult().getOutput() == null) {
@@ -99,21 +101,36 @@ public class AiGenerationServiceImpl implements AiGenerationService {
                             .getOutput()
                             .getText();
 
+                    // Track when the first actual content arrives.
                     if (content != null
                             && !content.isEmpty()
                             && endTime.get() == 0) {
                         endTime.set(System.currentTimeMillis());
                     }
 
+                    // Capture usage metadata whenever available.
                     if (response.getMetadata() != null
                             && response.getMetadata().getUsage() != null) {
                         usageRef.set(response.getMetadata().getUsage());
                     }
 
-                    if (content != null) {
+                    // Add only non-empty content to the complete response.
+                    if (content != null && !content.isEmpty()) {
                         fullResponseBuffer.append(content);
                     }
                 })
+
+                // Don't send empty chunks to the frontend.
+                .filter(response ->
+                        response != null
+                                && response.getResult() != null
+                                && response.getResult().getOutput() != null
+                                && response.getResult().getOutput().getText() != null
+                                && !response.getResult()
+                                .getOutput()
+                                .getText()
+                                .isEmpty()
+                )
 
                 .doOnComplete(() -> {
                     Schedulers.boundedElastic().schedule(() -> {
@@ -140,11 +157,16 @@ public class AiGenerationServiceImpl implements AiGenerationService {
                     );
 
                     if (error instanceof WebClientResponseException ex) {
-                        log.error("OpenRouter status: {}", ex.getStatusCode());
+                        log.error(
+                                "OpenRouter status: {}",
+                                ex.getStatusCode()
+                        );
+
                         log.error(
                                 "OpenRouter response body: {}",
                                 ex.getResponseBodyAsString()
                         );
+
                         log.error(
                                 "OpenRouter headers: {}",
                                 ex.getHeaders()
@@ -153,20 +175,11 @@ public class AiGenerationServiceImpl implements AiGenerationService {
                 })
 
                 .map(response -> {
-
-                    if (response == null
-                            || response.getResult() == null
-                            || response.getResult().getOutput() == null) {
-                        return new StreamResponse("");
-                    }
-
                     String text = response.getResult()
                             .getOutput()
                             .getText();
 
-                    return new StreamResponse(
-                            text != null ? text : ""
-                    );
+                    return new StreamResponse(text);
                 });
     }
 
