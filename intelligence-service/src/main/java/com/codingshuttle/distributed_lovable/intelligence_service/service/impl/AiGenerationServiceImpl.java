@@ -28,6 +28,7 @@ import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Schedulers;
 
@@ -80,78 +81,147 @@ public class AiGenerationServiceImpl implements AiGenerationService {
                 .user(userMessage)
                 .tools(codeGenerationTools)
                 .advisors(advisorSpec -> {
-                            advisorSpec.params(advisorParams);
-                            advisorSpec.advisors(fileTreeContextAdvisor);
-                        }
-                )
+                    advisorSpec.params(advisorParams);
+                    advisorSpec.advisors(fileTreeContextAdvisor);
+                })
                 .stream()
                 .chatResponse()
+
                 .doOnNext(response -> {
-                    if(response.getResults() != null && !response.getResults().isEmpty()) {
-                        String content = response.getResult().getOutput().getText();
 
-                        if(content != null && !content.isEmpty() && endTime.get() == 0) { // first non-empty chunk received
-                            endTime.set(System.currentTimeMillis());
-                        }
+                    if (response == null
+                            || response.getResult() == null
+                            || response.getResult().getOutput() == null) {
+                        return;
+                    }
 
-                        if(response.getMetadata().getUsage() != null) {
-                            usageRef.set(response.getMetadata().getUsage());
-                        }
+                    String content = response.getResult()
+                            .getOutput()
+                            .getText();
 
+                    if (content != null
+                            && !content.isEmpty()
+                            && endTime.get() == 0) {
+                        endTime.set(System.currentTimeMillis());
+                    }
+
+                    if (response.getMetadata() != null
+                            && response.getMetadata().getUsage() != null) {
+                        usageRef.set(response.getMetadata().getUsage());
+                    }
+
+                    if (content != null) {
                         fullResponseBuffer.append(content);
                     }
                 })
+
                 .doOnComplete(() -> {
                     Schedulers.boundedElastic().schedule(() -> {
-//                        parseAndSaveFiles(fullResponseBuffer.toString(), projectId);
 
-                        long duration = (endTime.get() - startTime.get()) /  1000;
-                        finalizeChats(userMessage, chatSession, fullResponseBuffer.toString(), duration, usageRef.get(), userId);
+                        long duration =
+                                (endTime.get() - startTime.get()) / 1000;
+
+                        finalizeChats(
+                                userMessage,
+                                chatSession,
+                                fullResponseBuffer.toString(),
+                                duration,
+                                usageRef.get(),
+                                userId
+                        );
                     });
                 })
-                .doOnError(error -> {
-                    log.error("Error during streaming for projectId: {}", projectId, error);
 
-                    if (error instanceof org.springframework.web.reactive.function.client.WebClientResponseException ex) {
-                        log.error("OpenRouter status:- {}", ex.getStatusCode());
-                        log.error("OpenRouter response body:- {}", ex.getResponseBodyAsString());
-                        log.error("OpenRouter headers:- {}", ex.getHeaders());
+                .doOnError(error -> {
+                    log.error(
+                            "Error during streaming for projectId: {}",
+                            projectId,
+                            error
+                    );
+
+                    if (error instanceof WebClientResponseException ex) {
+                        log.error("OpenRouter status: {}", ex.getStatusCode());
+                        log.error(
+                                "OpenRouter response body: {}",
+                                ex.getResponseBodyAsString()
+                        );
+                        log.error(
+                                "OpenRouter headers: {}",
+                                ex.getHeaders()
+                        );
                     }
                 })
+
                 .map(response -> {
-                    String text = response.getResult().getOutput().getText();
-                    return new StreamResponse(text != null ? text : "");
+
+                    if (response == null
+                            || response.getResult() == null
+                            || response.getResult().getOutput() == null) {
+                        return new StreamResponse("");
+                    }
+
+                    String text = response.getResult()
+                            .getOutput()
+                            .getText();
+
+                    return new StreamResponse(
+                            text != null ? text : ""
+                    );
                 });
     }
 
-    private void finalizeChats(String userMessage, ChatSession chatSession, String fullText, Long duration, Usage usage, Long userId) {
+    private void finalizeChats(
+            String userMessage,
+            ChatSession chatSession,
+            String fullText,
+            Long duration,
+            Usage usage,
+            Long userId
+    ) {
+
         Long projectId = chatSession.getId().getProjectId();
 
-        if(usage != null) {
+        if (usage != null) {
             int totalTokens = usage.getTotalTokens();
-            usageService.recordTokenUsage(chatSession.getId().getUserId(), totalTokens);
+            usageService.recordTokenUsage(
+                    chatSession.getId().getUserId(),
+                    totalTokens
+            );
         }
 
-        // Save the User message
+        int promptTokens =
+                usage != null ? usage.getPromptTokens() : 0;
+
+        int completionTokens =
+                usage != null ? usage.getCompletionTokens() : 0;
+
+        // Save user message
         chatMessageRepository.save(
                 ChatMessage.builder()
                         .chatSession(chatSession)
                         .role(MessageRole.USER)
                         .content(userMessage)
-                        .tokensUsed(usage.getPromptTokens())
+                        .tokensUsed(promptTokens)
                         .build()
         );
 
-        ChatMessage assistantChatMessage = ChatMessage.builder()
-                .role(MessageRole.ASSISTANT)
-                .content("Assistant Message here...")
-                .chatSession(chatSession)
-                .tokensUsed(usage.getCompletionTokens())
-                .build();
+        ChatMessage assistantChatMessage =
+                ChatMessage.builder()
+                        .role(MessageRole.ASSISTANT)
+                        .content("Assistant Message here...")
+                        .chatSession(chatSession)
+                        .tokensUsed(completionTokens)
+                        .build();
 
-        assistantChatMessage = chatMessageRepository.save(assistantChatMessage);
+        assistantChatMessage =
+                chatMessageRepository.save(assistantChatMessage);
 
-        List<ChatEvent> chatEventList = llmResponseParser.parseChatEvents(fullText, assistantChatMessage);
+        // Parse XML response
+        List<ChatEvent> chatEventList =
+                llmResponseParser.parseChatEvents(
+                        fullText,
+                        assistantChatMessage
+                );
         chatEventList.addFirst(ChatEvent.builder()
                         .type(ChatEventType.THOUGHT)
                         .status(ChatEventStatus.CONFIRMED)
